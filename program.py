@@ -66,180 +66,41 @@ df.info()
 
 
 # // TÌM CÁC MẪU PHỔ BIẾN BẰNG FP-GROWTH
-from collections import defaultdict
 
-class ItemsAndOrderedItems:
-    def __init__(self, transaction_id):
-        self.transaction_id = transaction_id
-        self.items_list = []
-        self.ordered_items_list = []
+import pandas as pd
+from mlxtend.preprocessing import TransactionEncoder
+from mlxtend.frequent_patterns import fpgrowth
 
-    def add_item(self, item):
-        self.items_list.append(item)
+# tạo cột Month
+df['Month'] = df['Date'].dt.to_period('M')
+# Gom các sản phẩm theo Invoice_ID theo từng tháng
+grouped_monthly = df.groupby(['Month', 'Invoice_ID'])['Product'].apply(list).reset_index()
 
-    def create_ordered_items(self, fp_set_list):
-        for item in fp_set_list:
-            if item in self.items_list:
-                self.ordered_items_list.append(item)
+fp_results_by_month = {}
 
-class TransactionIDs:
-    def __init__(self):
-        self.transaction_ids_dic = {}
-        self.items_with_frequency_count = defaultdict(int)
-        self.frequent_pattern_set = {}
+# Áp dụng FP-Growth cho từng tháng
+for month, group in grouped_monthly.groupby('Month'):
+    transactions = group['Product'].tolist()
 
-    def add_transaction_id_with_items(self, tid, items):
-        if tid not in self.transaction_ids_dic:
-            self.transaction_ids_dic[tid] = ItemsAndOrderedItems(tid)
+    te = TransactionEncoder()
+    te_array = te.fit(transactions).transform(transactions)
+    df_encoded = pd.DataFrame(te_array, columns=te.columns_)
 
-        for item in items:
-            self.transaction_ids_dic[tid].add_item(item)
-            self.items_with_frequency_count[item] += 1
+    frequent_itemsets = fpgrowth(df_encoded, min_support=0.02, use_colnames=True)
+    frequent_itemsets['Month'] = str(month)
 
-    def create_frequent_pattern_set_with_frequency_greater_than(self, count):
-        ordered_items = []
+    fp_results_by_month[str(month)] = frequent_itemsets
 
-        for item, freq in self.items_with_frequency_count.items():
-            if freq >= count:
-                self._insert_ordered(item, ordered_items)
+# Gộp kết quả lại để tiện theo dõi
+all_fp_items = pd.concat(fp_results_by_month.values(), ignore_index=True)
+all_fp_items = all_fp_items.sort_values(by=['Month', 'support'], ascending=[True, False])
 
-        for item in ordered_items:
-            self.frequent_pattern_set[item] = self.items_with_frequency_count[item]
+month = '2024-01'
+# Hiển thị một số kết quả
+top10_selected_month = all_fp_items[all_fp_items['Month'] == month].sort_values(by='support', ascending=False).head(10)
 
-    def _insert_ordered(self, item, ordered_items):
-        for i in range(len(ordered_items) + 1):
-            if i == len(ordered_items):
-                ordered_items.append(item)
-                break
-            elif self.items_with_frequency_count[item] >= self.items_with_frequency_count[ordered_items[i]]:
-                ordered_items.insert(i, item)
-                break
-
-    def initialize_ordered_item_set_for_each_transaction(self):
-        for trans in self.transaction_ids_dic.values():
-            trans.create_ordered_items(self.frequent_pattern_set)
-
-
-class FPGraphItemNode:
-    def __init__(self, number_id, name):
-        self.item_node_name = name
-        self.item_node_number_id = number_id
-        self.item_node_id = f"{name}_WithNumberID_{number_id}"
-        self.count = 1
-        self.parent_node_id = ""
-        self.end_item_nodes = {}
-        self.linked_item_node_ids = []
-
-    def add_parent_node(self, parent_node_id):
-        self.parent_node_id = parent_node_id
-
-    def add_end_item_node(self, name, number_id):
-        self.end_item_nodes[name] = number_id
-
-    def add_linked_item_node_id(self, node_id):
-        self.linked_item_node_ids.append(node_id)
-
-    def update_count(self):
-        self.count += 1
-
-
-class FPGraph:
-    def __init__(self, transaction_ids):
-        self.item_node_ids = {}
-        self.current_bait_node_ids = {}
-        self.add_item_node("Null", 1)
-        self.current_bait_node_ids["Null"] = 1
-        self.building_fp_tree(transaction_ids)
-
-    def building_fp_tree(self, transaction_ids):
-        for trans in transaction_ids.transaction_ids_dic.values():
-            current_node_id = "Null_WithNumberID_1"
-            for i, item in enumerate(trans.ordered_items_list):
-                if item not in self.item_node_ids[current_node_id].end_item_nodes:
-                    number_id = self.current_bait_node_ids.get(item, 0) + 1
-                    self.add_item_node(item, number_id)
-                    self.add_directed_edge(current_node_id, item, number_id)
-                    self.current_bait_node_ids[item] = number_id
-                    self.insert_set_to_tree(i, trans.ordered_items_list)
-                    break
-                else:
-                    end_id = f"{item}_WithNumberID_{self.item_node_ids[current_node_id].end_item_nodes[item]}"
-                    self.update_count_to_item_node_id(end_id)
-                    current_node_id = end_id
-
-    def insert_set_to_tree(self, index, ordered_items):
-        for i in range(index, len(ordered_items) - 1):
-            current = ordered_items[i]
-            next_item = ordered_items[i + 1]
-            next_id = self.current_bait_node_ids.get(next_item, 0) + 1
-
-            self.add_item_node(next_item, next_id)
-            self.add_directed_edge(f"{current}_WithNumberID_{self.current_bait_node_ids[current]}", next_item, next_id)
-
-            if next_item in self.current_bait_node_ids:
-                self.add_linked_edge(f"{next_item}_WithNumberID_{self.current_bait_node_ids[next_item]}",
-                                     f"{next_item}_WithNumberID_{next_id}")
-
-            self.current_bait_node_ids[next_item] = next_id
-
-    def add_item_node(self, name, number_id):
-        node_id = f"{name}_WithNumberID_{number_id}"
-        if node_id not in self.item_node_ids:
-            self.item_node_ids[node_id] = FPGraphItemNode(number_id, name)
-
-    def add_directed_edge(self, source_id, name, number_id):
-        self.item_node_ids[source_id].add_end_item_node(name, number_id)
-        end_id = f"{name}_WithNumberID_{number_id}"
-        self.item_node_ids[end_id].add_parent_node(source_id)
-
-    def add_linked_edge(self, first_id, second_id):
-        if second_id not in self.item_node_ids[first_id].linked_item_node_ids:
-            self.item_node_ids[first_id].add_linked_item_node_id(second_id)
-        if first_id not in self.item_node_ids[second_id].linked_item_node_ids:
-            self.item_node_ids[second_id].add_linked_item_node_id(first_id)
-
-    def update_count_to_item_node_id(self, node_id):
-        self.item_node_ids[node_id].update_count()
-
-
-class ItemWithCPBAndFPTree:
-    def __init__(self, item_name, item_node_ids):
-        self.item_name = item_name
-        self.list_of_cpb = []
-        self.items_with_count = defaultdict(int)
-        self.cpft_node_names = []
-        self.cpft_node_name_count = 0
-        self._add_to_list_of_cpb(item_name, item_node_ids)
-        self._find_cpft()
-
-    def _add_to_list_of_cpb(self, item_name, item_node_ids):
-        for node in item_node_ids.values():
-            if node.item_node_name == item_name:
-                self._trace_and_add(node.item_node_id, item_node_ids)
-
-    def _trace_and_add(self, node_id, item_node_ids):
-        path = []
-        while node_id != "Null_WithNumberID_1":
-            name = item_node_ids[node_id].item_node_name
-            path.append(name)
-            self.items_with_count[name] += 1
-            node_id = item_node_ids[node_id].parent_node_id
-        self.list_of_cpb.append(path)
-
-    def _find_cpft(self):
-        for name, count in self.items_with_count.items():
-            if count > self.cpft_node_name_count:
-                self.cpft_node_names = [name]
-                self.cpft_node_name_count = count
-            elif count == self.cpft_node_name_count:
-                self.cpft_node_names.append(name)
-  df['Month'] = df['Date'].dt.to_period('M')  # chuyển ngày về tháng
-monthly_data = df.groupby(['Product', 'Month']).agg({
-    'Quantity': 'sum'
-}).reset_index()
-
-# Tạo biến mục tiêu: nếu Quantity > 0 thì có nhập
-monthly_data['Nhap'] = (monthly_data['Quantity'] > 0).astype(int)
+print(f"Top 10 mẫu phổ biến trong tháng {month}:")
+print(top10_selected_month)
 
 
 # // DỰ ĐOÁN CÁC SẢN PHẨM NÊN NHẬP BẰNG SVM
